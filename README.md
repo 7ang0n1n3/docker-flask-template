@@ -78,7 +78,7 @@ Set these in the Portainer **Environment variables** section when creating or ed
 | Variable | Default | Description |
 |---|---|---|
 | `GITHUB_BRANCH` | `main` | Branch to clone and track for updates |
-| `APP_MODULE` | `app:app` | Gunicorn module in `module:variable` form. If your Flask app object is named `application` inside `wsgi.py`, set this to `wsgi:application` |
+| `APP_MODULE` | `app:app` | `filename_without_extension:flask_variable_name`. The first part is the `.py` file that contains the Flask object (e.g. `app.py` → `app`, `wsgi.py` → `wsgi`, `wgapp.py` → `wgapp`). The second part is the variable name assigned to `Flask(...)` inside that file. See [Flask App Requirements](#flask-app-requirements) for a full lookup table. |
 | `APP_PORT` | `5000` | Port that Gunicorn listens on inside the container, and the host port it maps to |
 | `GUNICORN_WORKERS` | `2` | Number of Gunicorn worker processes (see [Gunicorn Tuning](#gunicorn-tuning)) |
 | `GUNICORN_THREADS` | `2` | Threads per worker |
@@ -227,22 +227,29 @@ The Flask app repository must meet these requirements for the stack to work corr
 
 **Entry point**
 
-Gunicorn needs to find the Flask `app` object. The default `APP_MODULE=app:app` means it looks for a file named `app.py` in the repo root containing a variable named `app`:
+`APP_MODULE` follows gunicorn's `module:variable` format:
+
+- **`module`** — the Python file that contains your Flask object, written as its name **without the `.py` extension**. This is NOT a directory or package name, it is a file name.
+- **`variable`** — the name of the variable assigned to `Flask(...)` inside that file.
+
+To find the correct values, open the main Python file in your repo and look for the `Flask(` constructor:
 
 ```python
-# app.py
+# Example: the file is wgapp.py and the object is named wgapp
 from flask import Flask
-app = Flask(__name__)
+wgapp = Flask(__name__)   # → APP_MODULE=wgapp:wgapp
 ```
 
-If your structure is different, adjust `APP_MODULE` accordingly:
-
-| File | Flask variable | APP_MODULE value |
+| File in repo root | Flask line | `APP_MODULE` value |
 |---|---|---|
-| `app.py` | `app` | `app:app` (default) |
-| `app.py` | `application` | `app:application` |
-| `wsgi.py` | `app` | `wsgi:app` |
-| `src/main.py` | `app` | `src.main:app` |
+| `app.py` | `app = Flask(__name__)` | `app:app` (default) |
+| `app.py` | `application = Flask(__name__)` | `app:application` |
+| `wsgi.py` | `app = Flask(__name__)` | `wsgi:app` |
+| `wgapp.py` | `wgapp = Flask(__name__)` | `wgapp:wgapp` |
+| `main.py` | `app = Flask(__name__)` | `main:app` |
+| `run.py` | `server = Flask(__name__)` | `run:server` |
+
+> **Common mistake:** setting `APP_MODULE` to the project or package name from `pyproject.toml` instead of the actual `.py` filename. The `name` field in `pyproject.toml` is irrelevant — only the filename and variable name matter.
 
 **Dependencies**
 
