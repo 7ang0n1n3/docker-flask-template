@@ -148,7 +148,7 @@ services:
 
         # ── Launch Gunicorn ────────────────────────────────────────────────────
         echo "[gunicorn] Starting on 0.0.0.0:$$APP_PORT → $$APP_MODULE"
-        gunicorn \
+        PYTHONPATH=/app gunicorn \
           --bind "0.0.0.0:$$APP_PORT" \
           --workers "$$GUNICORN_WORKERS" \
           --threads "$$GUNICORN_THREADS" \

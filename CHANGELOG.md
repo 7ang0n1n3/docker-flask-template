@@ -10,6 +10,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.0.2] - 2026-02-23
+
+### Fixed
+- `ModuleNotFoundError` when `APP_MODULE` references a package inside `/app`. Gunicorn now starts with `PYTHONPATH=/app` explicitly set, ensuring the cloned repo root is always on Python's module search path regardless of gunicorn version behaviour.
+
+---
+
 ## [1.0.1] - 2026-02-23
 
 ### Fixed
