@@ -115,15 +115,28 @@ services:
         fi
 
         # ── App dependencies ───────────────────────────────────────────────────
+        # Installs deps without building the project as a package (avoids
+        # setuptools flat-layout discovery errors on apps with templates/ etc.)
         _install_deps() {
-          if [[ -f /app/pyproject.toml ]]; then
-            echo "[deps] Installing from pyproject.toml..."
-            uv pip install --system -e /app
-          elif [[ -f /app/requirements.txt ]]; then
+          if [[ -f /app/requirements.txt ]]; then
             echo "[deps] Installing from requirements.txt..."
             uv pip install --system -r /app/requirements.txt
+          elif [[ -f /app/pyproject.toml ]]; then
+            echo "[deps] Extracting dependencies from pyproject.toml..."
+            python3 -c '
+        import tomllib, subprocess, sys
+        with open("/app/pyproject.toml", "rb") as f:
+            data = tomllib.load(f)
+        deps = data.get("project", {}).get("dependencies", [])
+        if not deps:
+            print("[deps] No [project.dependencies] found in pyproject.toml")
+            sys.exit(0)
+        print("[deps] Installing", len(deps), "package(s)...")
+        result = subprocess.run(["uv", "pip", "install", "--system"] + deps)
+        sys.exit(result.returncode)
+        '
           else
-            echo "[deps] No pyproject.toml or requirements.txt found — installing flask as fallback..."
+            echo "[deps] No dependency file found — installing flask as fallback..."
             uv pip install --system flask
           fi
         }
@@ -154,11 +167,7 @@ services:
             if [[ "$$LOCAL" != "$$REMOTE" ]]; then
               echo "[watcher] Update detected ($$LOCAL → $$REMOTE) — pulling..."
               git -C /app reset --hard "origin/$$GITHUB_BRANCH" 2>/dev/null || continue
-              if [[ -f /app/pyproject.toml ]]; then
-                uv pip install --system -e /app
-              elif [[ -f /app/requirements.txt ]]; then
-                uv pip install --system -r /app/requirements.txt
-              fi
+              _install_deps
               echo "[watcher] Sending SIGHUP to Gunicorn (PID $$GUNICORN_PID) for graceful reload..."
               kill -HUP "$$GUNICORN_PID" 2>/dev/null || true
             fi

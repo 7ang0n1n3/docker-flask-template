@@ -10,6 +10,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.0.1] - 2026-02-23
+
+### Fixed
+- `pyproject.toml` projects with flat layouts (e.g. `templates/`, `screenshot/` top-level dirs) no longer fail to install. Dependencies are now read directly from `[project.dependencies]` via Python's built-in `tomllib` instead of attempting an editable package build with setuptools, which triggered auto-discovery errors on non-package Flask apps.
+
+### Changed
+- `requirements.txt` is now checked before `pyproject.toml` when detecting the dependency file.
+- The repo watcher now calls the shared `_install_deps` function instead of duplicating install logic inline.
+
+---
+
 ## [1.0.0] - 2026-02-23
 
 ### Added
