@@ -1,0 +1,174 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# Flask App Stack — Portainer deployment
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# REQUIRED
+#   GITHUB_REPO        Full clone URL of the Flask app repo
+#                      public  → https://github.com/user/repo.git
+#                      private → https://github.com/user/repo.git  (+ token)
+#                      ssh     → git@github.com:user/repo.git
+#
+# REPO AUTH (only needed when REPO_ACCESS=private)
+#   REPO_ACCESS        public (default) | private
+#   REPO_AUTH_TYPE     token (default)  | ssh
+#   GITHUB_TOKEN       Personal access token  [REPO_AUTH_TYPE=token]
+#   SSH_KEY_PATH       Path to SSH private key inside container
+#                      Default: /run/secrets/ssh_key
+#                      Mount your key as a volume: ./id_rsa:/run/secrets/ssh_key:ro
+#
+# APP
+#   GITHUB_BRANCH      Branch to track. Default: main
+#   APP_MODULE         Gunicorn app module in "module:variable" form. Default: app:app
+#   APP_PORT           Port Gunicorn listens on. Default: 5000
+#   GUNICORN_WORKERS   Number of worker processes. Default: 2
+#   GUNICORN_THREADS   Threads per worker. Default: 2
+#
+# STORAGE  (these paths are where volumes are mounted inside the container;
+#           the Flask app reads these env vars to locate its data directories)
+#   DYNAMIC_STORAGE    Writable runtime data (uploads, DB files, etc). Default: /data/dynamic
+#   STATIC_STORAGE     Static assets served by the app. Default: /data/static
+#
+# AUTO-UPDATE
+#   UPDATE_INTERVAL    Seconds between git fetch checks. Default: 60
+#                      On change: git pull + Gunicorn graceful reload (SIGHUP)
+# ══════════════════════════════════════════════════════════════════════════════
+
+services:
+  flask-app:
+    image: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+    restart: unless-stopped
+
+    ports:
+      - "${APP_PORT:-5000}:${APP_PORT:-5000}"
+
+    environment:
+      GITHUB_REPO:       ${GITHUB_REPO}
+      GITHUB_BRANCH:     ${GITHUB_BRANCH:-main}
+      APP_PORT:          ${APP_PORT:-5000}
+      APP_MODULE:        ${APP_MODULE:-app:app}
+      DYNAMIC_STORAGE:   ${DYNAMIC_STORAGE:-/data/dynamic}
+      STATIC_STORAGE:    ${STATIC_STORAGE:-/data/static}
+      UPDATE_INTERVAL:   ${UPDATE_INTERVAL:-60}
+      REPO_ACCESS:       ${REPO_ACCESS:-public}
+      REPO_AUTH_TYPE:    ${REPO_AUTH_TYPE:-token}
+      GITHUB_TOKEN:      ${GITHUB_TOKEN:-}
+      SSH_KEY_PATH:      ${SSH_KEY_PATH:-/run/secrets/ssh_key}
+      GUNICORN_WORKERS:  ${GUNICORN_WORKERS:-2}
+      GUNICORN_THREADS:  ${GUNICORN_THREADS:-2}
+
+    volumes:
+      - app_dynamic:${DYNAMIC_STORAGE:-/data/dynamic}
+      - app_static:${STATIC_STORAGE:-/data/static}
+
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -euo pipefail
+
+        # ── System packages ────────────────────────────────────────────────────
+        echo "[init] Installing system dependencies..."
+        apt-get update -qq && apt-get install -y -qq --no-install-recommends \
+          git openssh-client ca-certificates curl \
+          && rm -rf /var/lib/apt/lists/*
+
+        # ── Base Python packages ───────────────────────────────────────────────
+        echo "[init] Installing gunicorn..."
+        uv pip install --system gunicorn
+
+        # ── Auth setup ─────────────────────────────────────────────────────────
+        if [[ "$$REPO_ACCESS" == "private" ]]; then
+          case "$$REPO_AUTH_TYPE" in
+            token)
+              [[ -z "$$GITHUB_TOKEN" ]] && { echo "ERROR: GITHUB_TOKEN is required for private token auth" >&2; exit 1; }
+              git config --global credential.helper store
+              printf 'https://oauth2:%s@github.com\n' "$$GITHUB_TOKEN" > ~/.git-credentials
+              chmod 600 ~/.git-credentials
+              echo "[auth] Token credential configured."
+              ;;
+            ssh)
+              KEY="$$SSH_KEY_PATH"
+              [[ ! -f "$$KEY" ]] && { echo "ERROR: SSH key not found at $$KEY — mount it as a volume" >&2; exit 1; }
+              mkdir -p ~/.ssh
+              cp "$$KEY" ~/.ssh/id_rsa
+              chmod 600 ~/.ssh/id_rsa
+              ssh-keyscan -H github.com >> ~/.ssh/known_hosts 2>/dev/null
+              echo "[auth] SSH key configured."
+              ;;
+            *)
+              echo "ERROR: Unknown REPO_AUTH_TYPE: $$REPO_AUTH_TYPE (expected: token | ssh)" >&2
+              exit 1
+              ;;
+          esac
+        fi
+
+        # ── Clone or pull ──────────────────────────────────────────────────────
+        [[ -z "$$GITHUB_REPO" ]] && { echo "ERROR: GITHUB_REPO is not set" >&2; exit 1; }
+        BRANCH="$$GITHUB_BRANCH"
+
+        if [[ ! -d /app/.git ]]; then
+          echo "[git] Cloning $$GITHUB_REPO @ $$BRANCH ..."
+          git clone --branch "$$BRANCH" --single-branch "$$GITHUB_REPO" /app
+        else
+          echo "[git] Pulling latest from origin/$$BRANCH ..."
+          git -C /app fetch origin "$$BRANCH" --quiet
+          git -C /app reset --hard "origin/$$BRANCH"
+        fi
+
+        # ── App dependencies ───────────────────────────────────────────────────
+        _install_deps() {
+          if [[ -f /app/pyproject.toml ]]; then
+            echo "[deps] Installing from pyproject.toml..."
+            uv pip install --system -e /app
+          elif [[ -f /app/requirements.txt ]]; then
+            echo "[deps] Installing from requirements.txt..."
+            uv pip install --system -r /app/requirements.txt
+          else
+            echo "[deps] No pyproject.toml or requirements.txt found — installing flask as fallback..."
+            uv pip install --system flask
+          fi
+        }
+        _install_deps
+
+        # ── Storage directories ────────────────────────────────────────────────
+        mkdir -p "$$DYNAMIC_STORAGE" "$$STATIC_STORAGE"
+        echo "[storage] Dynamic: $$DYNAMIC_STORAGE  Static: $$STATIC_STORAGE"
+
+        # ── Launch Gunicorn ────────────────────────────────────────────────────
+        echo "[gunicorn] Starting on 0.0.0.0:$$APP_PORT → $$APP_MODULE"
+        gunicorn \
+          --bind "0.0.0.0:$$APP_PORT" \
+          --workers "$$GUNICORN_WORKERS" \
+          --threads "$$GUNICORN_THREADS" \
+          --chdir /app \
+          "$$APP_MODULE" &
+        GUNICORN_PID=$$!
+
+        # ── Background repo watcher ────────────────────────────────────────────
+        (
+          echo "[watcher] Started — checking for updates every $${UPDATE_INTERVAL}s"
+          while true; do
+            sleep "$$UPDATE_INTERVAL"
+            LOCAL=$$(git -C /app rev-parse HEAD 2>/dev/null) || continue
+            git -C /app fetch origin "$$GITHUB_BRANCH" --quiet 2>/dev/null || continue
+            REMOTE=$$(git -C /app rev-parse "origin/$$GITHUB_BRANCH" 2>/dev/null) || continue
+            if [[ "$$LOCAL" != "$$REMOTE" ]]; then
+              echo "[watcher] Update detected ($$LOCAL → $$REMOTE) — pulling..."
+              git -C /app reset --hard "origin/$$GITHUB_BRANCH" 2>/dev/null || continue
+              if [[ -f /app/pyproject.toml ]]; then
+                uv pip install --system -e /app
+              elif [[ -f /app/requirements.txt ]]; then
+                uv pip install --system -r /app/requirements.txt
+              fi
+              echo "[watcher] Sending SIGHUP to Gunicorn (PID $$GUNICORN_PID) for graceful reload..."
+              kill -HUP "$$GUNICORN_PID" 2>/dev/null || true
+            fi
+          done
+        ) &
+
+        # ── Wait ───────────────────────────────────────────────────────────────
+        trap "echo '[shutdown] Stopping...'; kill $$GUNICORN_PID 2>/dev/null; exit 0" SIGTERM SIGINT
+        wait "$$GUNICORN_PID"
+
+volumes:
+  app_dynamic:
+  app_static:
