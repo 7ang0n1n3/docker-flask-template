@@ -152,6 +152,7 @@ services:
           --bind "0.0.0.0:$$APP_PORT" \
           --workers "$$GUNICORN_WORKERS" \
           --threads "$$GUNICORN_THREADS" \
+          --worker-class gthread \
           --chdir /app \
           "$$APP_MODULE" &
         GUNICORN_PID=$$!
